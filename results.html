@@ -1,0 +1,54 @@
+
+<!doctype html>
+<html lang="pt-BR">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Resultados - Urna</title>
+<link rel="stylesheet" href="assets/css/theme.css">
+</head>
+<body>
+<div class="container" id="report-root">
+  <div style="display:flex;justify-content:space-between;align-items:center">
+    <h1>Relatório de Resultados</h1>
+    <div>
+      <button onclick="window.print()" class="btn" style="background:#2563eb;color:white">Gerar PDF / Imprimir</button>
+      <button onclick="downloadJSON()" class="btn" style="background:#059669;color:white">Exportar JSON</button>
+      <button onclick="location.href='admin.html'" class="btn">Voltar Admin</button>
+    </div>
+  </div>
+  <div id="report-content"></div>
+</div>
+
+<script>
+const DB = JSON.parse(localStorage.getItem('urna_db')||'{}');
+function calcResults(){
+  const roles = DB.roles || [];
+  const results = {};
+  roles.forEach(r=> results[r] = {});
+  const votes = DB.votes || [];
+  votes.forEach(vote => {
+    roles.forEach(r=>{
+      const val = vote.vote && vote.vote[r];
+      if(!val) return;
+      if(val==='BRANCO') { results[r]['BRANCO'] = (results[r]['BRANCO']||0)+1; }
+      else { results[r][val] = (results[r][val]||0)+1; }
+    });
+  });
+  return {results, total:votes.length};
+}
+
+function render(){
+  const {results,total} = calcResults();
+  const container = document.getElementById('report-content');
+  container.innerHTML = '<p class="small">Total de votos (eleitores únicos): <strong>'+total+'</strong></p>';
+  Object.keys(results).forEach(role=>{
+    const map = results[role];
+    const rows = Object.keys(map).map(k=>'<tr><td>'+k+'</td><td>'+map[k]+'</td></tr>').join('');
+    container.innerHTML += '<h2>'+role+'</h2><table class="table"><tr><th>Opção</th><th>Votos</th></tr>'+rows+'</table>';
+  });
+}
+
+function downloadJSON(){ const a=document.createElement('a'); a.href='data:application/json;charset=utf-8,'+encodeURIComponent(JSON.stringify(DB,null,2)); a.download='results.json'; a.click(); }
+
+render();
+</script>
+</body>
+</html>

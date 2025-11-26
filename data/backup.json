@@ -1,0 +1,47 @@
+{
+  "roles": [
+    "Prefeito",
+    "Vereador"
+  ],
+  "roleConfig": {
+    "Prefeito": {
+      "digits": 2,
+      "order": 1
+    },
+    "Vereador": {
+      "digits": 5,
+      "order": 2
+    }
+  },
+  "candidates": [
+    {
+      "role": "Prefeito",
+      "number": "13",
+      "name": "João Silva",
+      "party": "PTZ",
+      "photo": ""
+    },
+    {
+      "role": "Prefeito",
+      "number": "45",
+      "name": "Maria Souza",
+      "party": "PSDBX",
+      "photo": ""
+    },
+    {
+      "role": "Vereador",
+      "number": "55000",
+      "name": "José Oliveira",
+      "party": "PSDZ",
+      "photo": ""
+    },
+    {
+      "role": "Vereador",
+      "number": "10123",
+      "name": "Ana Pereira",
+      "party": "REPZ",
+      "photo": ""
+    }
+  ],
+  "votes": []
+}

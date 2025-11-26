@@ -1,0 +1,1 @@
+self.addEventListener('install', function(e){ e.waitUntil(caches.open('urna-v1').then(c=>c.addAll(['/','/index.html','/admin.html','/results.html','/assets/css/theme.css']))); self.skipWaiting(); }); self.addEventListener('fetch', function(e){ e.respondWith(caches.match(e.request).then(r=> r || fetch(e.request))); });
