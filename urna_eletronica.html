@@ -1,0 +1,1155 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Urna Eletrônica Brasileira Configurada</title>
+    <!-- Carrega o Tailwind CSS para estilização -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        'urna-casing': '#3c4043',
+                        'urna-screen': '#1f1f1f',
+                        'btn-branco': '#ffffff',
+                        'btn-corrige': '#ff8c00',
+                        'btn-confirma': '#008000',
+                    },
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        /* Estilos específicos da Urna */
+        .display-segment {
+            width: 3rem;
+            height: 4rem;
+            background-color: #f0f0f0;
+            border: 1px solid #333;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 2.5rem;
+            font-weight: bold;
+            color: #1f1f1f;
+            margin-right: 0.5rem;
+            border-radius: 0.375rem;
+        }
+        .urna-key {
+            transition: all 0.05s ease-out;
+            /* Garante que o texto se adapte em telas pequenas */
+            font-size: 0.75rem; /* text-xs */
+        }
+        @media (min-width: 768px) {
+            .urna-key {
+                font-size: 1.5rem; /* text-xl */
+            }
+        }
+        .urna-key:active {
+            transform: scale(0.95);
+        }
+        .blink {
+            animation: blinker 0.8s linear infinite;
+        }
+        @keyframes blinker {
+            50% { opacity: 0; }
+        }
+        .results-table th, .results-table td {
+            padding: 8px;
+            border: 1px solid #4B5563;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen flex items-center justify-center p-2 md:p-4 font-sans">
+
+    <!-- Container Principal da Urna / Admin / Resultados -->
+    <div id="app-container" class="w-full max-w-4xl">
+        <!-- O conteúdo será injetado pelo JavaScript -->
+    </div>
+
+    <!-- Firebase Imports -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        // Adicionado getDocs para a contagem de votos
+        import { getFirestore, doc, getDoc, setDoc, onSnapshot, collection, query, writeBatch, runTransaction, getDocs, updateDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Variáveis Globais do Ambiente (OBRIGATÓRIO)
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        let db, auth;
+        let userId = null;
+        let isAuthReady = false;
+
+        // --- Configuração e Inicialização do Firebase ---
+        function initFirebase() {
+            if (!firebaseConfig) {
+                console.error("Firebase configuration is missing.");
+                window.FIREBASE_FALLBACK = true;
+                window.runApp(); 
+                return;
+            }
+
+            try {
+                setLogLevel('debug');
+                const app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+                
+                window.db = db;
+                window.auth = auth;
+                window.getDocs = getDocs; // Exporta getDocs para uso na contagem
+
+                onAuthStateChanged(auth, async (user) => {
+                    if (user) {
+                        userId = user.uid;
+                        console.log("Usuário autenticado:", userId);
+                    } else {
+                        try {
+                            if (initialAuthToken) {
+                                await signInWithCustomToken(auth, initialAuthToken);
+                            } else {
+                                await signInAnonymously(auth);
+                            }
+                        } catch (error) {
+                            console.error("Erro na autenticação:", error);
+                        }
+                    }
+                    isAuthReady = true;
+                    window.runApp();
+                });
+            } catch (e) {
+                console.error("Erro ao inicializar o Firebase:", e);
+                window.FIREBASE_FALLBACK = true;
+                window.runApp();
+            }
+        }
+
+        // --- Configurações do Firestore (Caminhos) ---
+        const ELECTION_CONFIG_PATH = `artifacts/${appId}/public/data/election_config`;
+        const VOTES_COLLECTION_PATH = `artifacts/${appId}/public/data/votes`;
+
+        // Placeholder de foto para candidatos que não tem upload (Base64 pequeno)
+        const DEFAULT_PHOTO_BASE64 = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAwIiBoZWlnaHQ9IjI0MCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSIjNDU1QTg2Ii8+PHRleHQgeD0iNTAlIiB5PSI1MCUiIHk9IjUyJSIgZG9taW5hbnQtYmFzZWxpbmU9Im1pZGRsZSIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9IlNhbnMtU2VyaWYiIGZvbnQtc2l6ZT0iMjBweCIgZmlsbD0iI2ZmZiI+U2VtIEZvdG88L3RleHQ+PC9zdmc+';
+
+        /**
+         * Inicializa a configuração da eleição se não existir.
+         */
+        async function getOrCreateElectionConfig() {
+            if (window.FIREBASE_FALLBACK) {
+                 return {
+                    roles: ['Prefeito', 'Vereador'],
+                    roleConfig: {
+                        'Prefeito': { digits: 2, order: 1 },
+                        'Vereador': { digits: 5, order: 2 }
+                    },
+                    candidates: [
+                        { number: '13', name: 'João da Silva', party: 'PTZ', role: 'Prefeito', photo: DEFAULT_PHOTO_BASE64 },
+                        { number: '45', name: 'Maria Souza', party: 'PSDBX', role: 'Prefeito', photo: DEFAULT_PHOTO_BASE64 },
+                        { number: '55000', name: 'José Oliveira', party: 'PSDZ', role: 'Vereador', photo: DEFAULT_PHOTO_BASE64 },
+                        { number: '10123', name: 'Ana Pereira', party: 'REPZ', role: 'Vereador', photo: DEFAULT_PHOTO_BASE64 },
+                    ]
+                };
+            }
+
+            const docRef = doc(db, ELECTION_CONFIG_PATH, 'current');
+            const docSnap = await getDoc(docRef);
+
+            if (docSnap.exists()) {
+                return docSnap.data();
+            } else {
+                const defaultData = {
+                    roles: ['Prefeito', 'Vereador'],
+                    roleConfig: {
+                        'Prefeito': { digits: 2, order: 1 },
+                        'Vereador': { digits: 5, order: 2 }
+                    },
+                    candidates: []
+                };
+                await setDoc(docRef, defaultData);
+                return defaultData;
+            }
+        }
+
+        /**
+         * Salva a configuração atualizada.
+         */
+        async function saveElectionConfig(config) {
+            if (window.FIREBASE_FALLBACK) return;
+            try {
+                const docRef = doc(db, ELECTION_CONFIG_PATH, 'current');
+                await setDoc(docRef, config);
+                console.log("Configuração da eleição salva com sucesso.");
+            } catch (e) {
+                console.error("Erro ao salvar a configuração:", e);
+                alert("Erro ao salvar a configuração. Verifique se o tamanho total dos dados (incluindo as fotos) excede o limite de 1MB do Firestore.");
+            }
+        }
+        
+        /**
+         * Registra o voto de um eleitor.
+         */
+        async function registerVote(voteData) {
+            if (window.FIREBASE_FALLBACK) {
+                console.log("Voto registrado (Fallback):", voteData);
+                return;
+            }
+
+            try {
+                await runTransaction(db, async (transaction) => {
+                    // Usa o ID do usuário para garantir voto único
+                    const userId = auth.currentUser?.uid || crypto.randomUUID();
+                    const voteDocRef = doc(db, VOTES_COLLECTION_PATH, userId);
+                    
+                    const voteSnap = await transaction.get(voteDocRef);
+                    if (voteSnap.exists()) {
+                        throw new Error("Eleitor já votou.");
+                    }
+                    
+                    transaction.set(voteDocRef, {
+                        ...voteData,
+                        userId: userId,
+                        timestamp: new Date().toISOString()
+                    });
+                });
+                console.log("Voto registrado com sucesso!");
+                window.voto_registrado_sucesso = true;
+            } catch (e) {
+                console.error("Erro ao registrar voto (pode ser voto duplicado):", e.message);
+                window.voto_registrado_sucesso = false;
+            }
+        }
+
+        // Exportar funções Firestore para o escopo global
+        window.getOrCreateElectionConfig = getOrCreateElectionConfig;
+        window.saveElectionConfig = saveElectionConfig;
+        window.registerVote = registerVote;
+        window.DEFAULT_PHOTO_BASE64 = DEFAULT_PHOTO_BASE64;
+
+        // Inicia a configuração do Firebase
+        initFirebase();
+    </script>
+    
+    <script>
+        // Variáveis de Estado da Aplicação
+        let electionConfig = null;
+        let appState = {
+            mode: 'voter', // 'voter', 'admin', ou 'results'
+            currentStageIndex: 0,
+            currentInput: "",
+            isVoteBlank: false,
+            isVoteLocked: false,
+            votes: {}, // { 'Presidente': '13', ... }
+            adminSecretCounter: 0,
+            adminSecretInput: "",
+            // Novo estado para o admin:
+            showCandidateSuccess: false, // Controla a tela de sucesso após cadastro
+            resultsData: null, // Armazena os dados de resultados após o cálculo
+            lastCandidateRegistered: null // Armazena o último candidato cadastrado para exibição
+        };
+
+        const appContainer = document.getElementById('app-container');
+
+        // --- Gerenciamento de Estado e Renderização ---
+
+        /**
+         * Altera o estado da aplicação e re-renderiza.
+         * @param {Object} newState - Partial state update.
+         */
+        function setState(newState) {
+            Object.assign(appState, newState);
+            render();
+        }
+
+        /**
+         * Renderiza a interface do usuário dependendo do modo.
+         */
+        function render() {
+            if (appState.mode === 'admin') {
+                renderAdminMode();
+            } else if (appState.mode === 'results') {
+                renderResultsMode();
+            } else {
+                renderVoterMode();
+            }
+        }
+
+        // --- LÓGICA DO MODO ADMINISTRADOR (Admin Mode) ---
+
+        /**
+         * Lida com a entrada secreta para o modo admin e resultados.
+         * Admin: BRANCO (3x) + 666
+         * Resultados (Encerramento): CONFIRMA (3x) + 666
+         * @param {string} type - 'BRANCO', 'CONFIRMA' ou 'NUMBER'.
+         * @param {string} value - O dígito pressionado.
+         */
+        function checkAdminSecret(type, value) {
+            if (appState.mode === 'results') return; // Bloqueia durante a tela de resultados
+
+            // Verifica o acesso ao modo Admin (BRANCO x3 + 666)
+            if (appState.mode === 'voter' && appState.adminSecretCounter < 3) {
+                if (type === 'BRANCO') {
+                    appState.adminSecretCounter++;
+                    appState.adminSecretInput = ""; // Reseta o input de número
+                } else if (type !== 'NUMBER') {
+                    appState.adminSecretCounter = 0; // Outra tecla reseta
+                }
+            } else if (appState.mode === 'voter' && appState.adminSecretCounter >= 3) {
+                // Etapa 2: Senha numérica 666 (para admin)
+                if (type === 'NUMBER') {
+                    appState.adminSecretInput += value;
+                    if (appState.adminSecretInput.length === 3) {
+                        if (appState.adminSecretInput === '666') {
+                            setState({ mode: 'admin', adminSecretCounter: 0, adminSecretInput: "" });
+                            return;
+                        } else {
+                            appState.adminSecretCounter = 0;
+                            appState.adminSecretInput = "";
+                            alert("ACESSO ADMINISTRADOR NEGADO.");
+                            renderVoterMode();
+                            return;
+                        }
+                    } else if (appState.adminSecretInput.length > 3) {
+                        appState.adminSecretCounter = 0;
+                        appState.adminSecretInput = "";
+                        renderVoterMode();
+                        return;
+                    }
+                } else if (type !== 'BRANCO') {
+                    appState.adminSecretCounter = 0;
+                    appState.adminSecretInput = "";
+                }
+            }
+            
+            // --- Verifica o acesso ao modo Resultados (CONFIRMA x3 + 666) ---
+            if (appState.mode === 'voter') {
+                 if (type === 'CONFIRMA') {
+                    appState.confirmSecretCounter = (appState.confirmSecretCounter || 0) + 1;
+                    appState.confirmSecretInput = "";
+                 } else if (type === 'NUMBER') {
+                    if ((appState.confirmSecretCounter || 0) >= 3) {
+                        appState.confirmSecretInput += value;
+                        if (appState.confirmSecretInput.length === 3) {
+                            if (appState.confirmSecretInput === '666') {
+                                // ACESSO AO MODO RESULTADOS
+                                setState({ 
+                                    mode: 'results', 
+                                    confirmSecretCounter: 0, 
+                                    confirmSecretInput: "" 
+                                });
+                                return;
+                            } else {
+                                // Senha errada
+                                appState.confirmSecretCounter = 0;
+                                appState.confirmSecretInput = "";
+                            }
+                        }
+                    } else {
+                        // Se digitou número sem ter apertado 3x CONFIRMA, reseta o contador
+                        appState.confirmSecretCounter = 0;
+                    }
+                 } else {
+                    appState.confirmSecretCounter = 0;
+                    appState.confirmSecretInput = "";
+                 }
+            }
+        }
+
+
+        /**
+         * Renderiza o Painel de Administração (HTML com formulários).
+         */
+        function renderAdminMode() {
+            if (!electionConfig) return; 
+
+            // Se o último cadastro foi bem-sucedido, mostra a tela de confirmação
+            if (appState.showCandidateSuccess) {
+                renderCandidateSuccessScreen();
+                return;
+            }
+
+            const rolesList = electionConfig.roles.map(role => {
+                const config = electionConfig.roleConfig[role] || {};
+                const candidateCount = electionConfig.candidates.filter(c => c.role === role).length;
+                return `
+                    <li class="bg-gray-700 p-3 rounded-md flex justify-between items-center mb-2">
+                        <span class="font-bold">${role} (${config.digits} dígitos)</span>
+                        <span class="text-sm">Candidatos: ${candidateCount}</span>
+                        <button onclick="removeRole('${role}')" class="text-red-400 hover:text-red-500 text-sm">Remover</button>
+                    </li>
+                `;
+            }).join('');
+            
+            const candidateRows = electionConfig.candidates.map((c, index) => `
+                <tr class="border-b border-gray-600 hover:bg-gray-600">
+                    <td class="p-2">${c.role}</td>
+                    <td class="p-2">${c.number}</td>
+                    <td class="p-2">${c.name}</td>
+                    <td class="p-2">
+                        <button onclick="removeCandidate(${index})" class="text-red-400 hover:text-red-500 text-sm">Remover</button>
+                    </td>
+                </tr>
+            `).join('');
+
+
+            appContainer.innerHTML = `
+                <div class="bg-gray-900 text-white p-6 md:p-10 rounded-xl shadow-2xl w-full">
+                    <div class="flex justify-between items-center mb-6 border-b border-gray-700 pb-4">
+                        <h1 class="text-3xl font-bold text-yellow-400">PAINEL DE ADMINISTRAÇÃO</h1>
+                        <button onclick="setState({ mode: 'voter' })" class="bg-red-600 hover:bg-red-700 p-2 rounded-md font-bold text-sm">
+                            <span class="hidden sm:inline">Sair para Votação</span>
+                            <span class="sm:hidden">Sair</span>
+                        </button>
+                    </div>
+
+                    <!-- Seção de Cargos -->
+                    <div class="mb-8">
+                        <h2 class="text-2xl font-semibold mb-4 border-l-4 border-yellow-400 pl-3">1. Configurar Cargos</h2>
+                        <div class="mb-4">
+                            <ul class="list-none p-0">${rolesList || '<li class="text-gray-400">Nenhum cargo cadastrado.</li>'}</ul>
+                        </div>
+                        <form onsubmit="addRole(event)" class="flex flex-col sm:flex-row gap-3 bg-gray-800 p-4 rounded-md">
+                            <input id="new-role-name" type="text" placeholder="Nome do Cargo (Ex: Governador)" required class="flex-1 p-2 rounded text-gray-900 border border-gray-500">
+                            <input id="new-role-digits" type="number" placeholder="Dígitos (2 a 5)" required min="2" max="5" class="w-20 p-2 rounded text-gray-900 border border-gray-500">
+                            <button type="submit" class="bg-blue-600 hover:bg-blue-700 p-2 rounded font-bold">Adicionar Cargo</button>
+                        </form>
+                    </div>
+                    
+                    <!-- Seção de Candidatos -->
+                    <div class="mb-8">
+                        <h2 class="text-2xl font-semibold mb-4 border-l-4 border-yellow-400 pl-3">2. Cadastrar Candidatos</h2>
+                        <form id="candidate-form" onsubmit="addCandidate(event)" class="grid grid-cols-1 md:grid-cols-5 gap-3 bg-gray-800 p-4 rounded-md">
+                            
+                            <!-- Primeira Linha (Dados Textuais) -->
+                            <select id="cand-role" required class="p-2 rounded text-gray-900 border border-gray-500 md:col-span-1">
+                                <option value="">Selecione o Cargo</option>
+                                ${electionConfig.roles.map(role => `<option value="${role}">${role}</option>`).join('')}
+                            </select>
+                            <input id="cand-number" type="text" pattern="[0-9]*" placeholder="Número (Ex: 13)" required class="p-2 rounded text-gray-900 border border-gray-500 md:col-span-1">
+                            <input id="cand-name" type="text" placeholder="Nome do Candidato" required class="p-2 rounded text-gray-900 border border-gray-500 md:col-span-1">
+                            <input id="cand-party" type="text" placeholder="Partido (Ex: PT)" required class="p-2 rounded text-gray-900 border border-gray-500 md:col-span-2">
+
+                            <!-- Segunda Linha (Foto e Botão) -->
+                            <div class="md:col-span-2 flex flex-col gap-2">
+                                <label for="cand-photo" class="text-sm font-medium text-gray-300">Foto (máx. 50KB)</label>
+                                <input id="cand-photo" type="file" accept="image/*" onchange="previewPhoto(event)" class="p-1 rounded text-gray-900 bg-white border border-gray-500">
+                            </div>
+                            <div class="md:col-span-1 flex justify-center items-center">
+                                <img id="photo-preview" class="w-20 h-24 object-cover rounded border border-gray-600 bg-gray-700" src="https://placehold.co/80x96/4B5563/ffffff?text=Preview" alt="Prévia da Foto">
+                            </div>
+                            <button type="submit" class="bg-green-600 hover:bg-green-700 p-2 rounded font-bold md:col-span-2 self-end">Cadastrar Candidato</button>
+                        </form>
+                        
+                        <div class="mt-6 overflow-x-auto">
+                            <table class="w-full text-left table-auto">
+                                <thead class="text-gray-400 uppercase bg-gray-700">
+                                    <tr>
+                                        <th class="p-2">Cargo</th>
+                                        <th class="p-2">Número</th>
+                                        <th class="p-2">Nome</th>
+                                        <th class="p-2">Ação</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${candidateRows}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        /**
+         * Renderiza a tela de sucesso após o cadastro do candidato.
+         */
+        function renderCandidateSuccessScreen() {
+            const c = appState.lastCandidateRegistered;
+            const config = electionConfig.roleConfig[c.role] || {};
+
+            appContainer.innerHTML = `
+                <div class="bg-gray-900 text-white p-6 md:p-10 rounded-xl shadow-2xl w-full">
+                    <h1 class="text-3xl font-bold text-green-400 mb-6 border-b border-gray-700 pb-4">Candidato Cadastrado com Sucesso!</h1>
+                    
+                    <div class="flex flex-col md:flex-row items-start md:items-center gap-6 bg-gray-800 p-6 rounded-lg mb-8">
+                        <img class="w-24 h-32 object-cover rounded border border-gray-600 flex-shrink-0" src="${c.photo}" alt="Foto do Candidato">
+                        <div class="flex-1">
+                            <p class="text-sm text-gray-400">${c.role} (${config.digits} dígitos)</p>
+                            <p class="text-2xl font-bold text-white">${c.number} - ${c.name}</p>
+                            <p class="text-xl text-yellow-400">Partido: ${c.party}</p>
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                        <button onclick="saveAndContinue()" class="bg-blue-600 hover:bg-blue-700 p-3 rounded-md font-bold text-lg">
+                            Salvar Configuração
+                        </button>
+                        <button onclick="resetCandidateForm()" class="bg-purple-600 hover:bg-purple-700 p-3 rounded-md font-bold text-lg">
+                            Cadastrar Outro Candidato
+                        </button>
+                        <button onclick="setState({ mode: 'voter', showCandidateSuccess: false })" class="bg-red-600 hover:bg-red-700 p-3 rounded-md font-bold text-lg">
+                            Sair para Votação
+                        </button>
+                    </div>
+                </div>
+            `;
+        }
+        
+        /**
+         * Salva a configuração e volta para o formulário principal do admin.
+         */
+        function saveAndContinue() {
+            window.saveElectionConfig(electionConfig);
+            setState({ showCandidateSuccess: false });
+        }
+
+        /**
+         * Volta para o formulário principal do admin (Cadastro Outro Candidato).
+         */
+        function resetCandidateForm() {
+             setState({ showCandidateSuccess: false });
+             // A re-renderização do renderAdminMode() já limpa o formulário implicitamente.
+        }
+
+        // --- Funções de Manipulação do Admin ---
+
+        /**
+         * Função auxiliar para ler um arquivo como Base64.
+         */
+        function getBase64(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.readAsDataURL(file);
+                reader.onload = () => resolve(reader.result);
+                reader.onerror = error => reject(error);
+            });
+        }
+
+        /**
+         * Função para pré-visualizar a foto selecionada.
+         */
+        function previewPhoto(event) {
+            const reader = new FileReader();
+            const photoPreview = document.getElementById('photo-preview');
+            const file = event.target.files[0];
+
+            if (file) {
+                const MAX_SIZE_BYTES = 50 * 1024; // 50 KB
+                if (file.size > MAX_SIZE_BYTES) {
+                    photoPreview.src = "https://placehold.co/80x96/B91C1C/ffffff?text=MUITO+GRANDE";
+                    return;
+                }
+                reader.onload = function(e) {
+                    photoPreview.src = e.target.result;
+                };
+                reader.readAsDataURL(file);
+            } else {
+                photoPreview.src = "https://placehold.co/80x96/4B5563/ffffff?text=Preview";
+            }
+        }
+
+        function addRole(event) {
+            event.preventDefault();
+            const name = document.getElementById('new-role-name').value.trim();
+            const digits = parseInt(document.getElementById('new-role-digits').value, 10);
+            
+            if (name && digits >= 2 && digits <= 5 && !electionConfig.roles.includes(name)) {
+                electionConfig.roles.push(name);
+                const order = electionConfig.roles.length; 
+                electionConfig.roleConfig[name] = { digits: digits, order: order };
+                
+                window.saveElectionConfig(electionConfig);
+                renderAdminMode();
+            } else {
+                alert("Verifique os dados. Nome do cargo deve ser único e dígitos entre 2 e 5.");
+            }
+        }
+
+        function removeRole(roleName) {
+            if (!confirm(`Tem certeza que deseja remover o cargo ${roleName}? Todos os candidatos deste cargo serão removidos.`)) return;
+
+            electionConfig.roles = electionConfig.roles.filter(r => r !== roleName);
+            delete electionConfig.roleConfig[roleName];
+            electionConfig.candidates = electionConfig.candidates.filter(c => c.role !== roleName);
+
+            window.saveElectionConfig(electionConfig);
+            renderAdminMode();
+        }
+
+        async function addCandidate(event) {
+            event.preventDefault();
+            const form = event.target;
+            const role = form.querySelector('#cand-role').value;
+            const number = form.querySelector('#cand-number').value.trim();
+            const name = form.querySelector('#cand-name').value.trim();
+            const party = form.querySelector('#cand-party').value.trim();
+            const photoFile = form.querySelector('#cand-photo').files[0];
+            const roleConfig = electionConfig.roleConfig[role];
+            let photoBase64 = window.DEFAULT_PHOTO_BASE64; 
+
+            // 1. Validação de Dados Textuais
+            if (!role || !number || !name || !party || !roleConfig) {
+                alert("Preencha todos os campos textuais.");
+                return;
+            }
+            if (number.length !== roleConfig.digits || !/^\d+$/.test(number)) {
+                alert(`O número para ${role} deve ter exatamente ${roleConfig.digits} dígitos e ser apenas numérico.`);
+                return;
+            }
+            if (electionConfig.candidates.some(c => c.number === number && c.role === role)) {
+                 alert(`Já existe um candidato cadastrado com o número ${number} para este cargo.`);
+                 return;
+            }
+
+            // 2. Tratamento da Foto
+            if (photoFile) {
+                const MAX_SIZE_BYTES = 50 * 1024; // 50 KB
+                if (photoFile.size > MAX_SIZE_BYTES) {
+                    alert("A foto é muito grande. O limite é de 50KB.");
+                    return;
+                }
+                try {
+                    photoBase64 = await getBase64(photoFile);
+                } catch(e) {
+                    console.error("Erro ao ler o arquivo de foto:", e);
+                    alert("Erro ao carregar a imagem. Tente novamente.");
+                    return;
+                }
+            }
+
+            // 3. Adiciona candidato e mostra sucesso
+            const newCandidate = { role, number, name, party, photo: photoBase64 };
+            electionConfig.candidates.push(newCandidate);
+            
+            // Não salva imediatamente, mas armazena a alteração e o candidato
+            setState({ 
+                showCandidateSuccess: true, 
+                lastCandidateRegistered: newCandidate 
+            });
+
+            form.reset(); 
+            document.getElementById('photo-preview').src = "https://placehold.co/80x96/4B5563/ffffff?text=Preview"; 
+        }
+
+        function removeCandidate(index) {
+            if (!confirm("Tem certeza que deseja remover este candidato?")) return;
+            electionConfig.candidates.splice(index, 1);
+            window.saveElectionConfig(electionConfig);
+            renderAdminMode();
+        }
+
+        // --- LÓGICA DO MODO ELEITOR (Voter Mode) ---
+        
+        // (O código renderVoterMode, renderEndScreen, updateDisplay, handleKeyPress, handleBlank, handleCorrect e handleConfirm
+        // permanece o mesmo do arquivo anterior, pois a lógica de votação em si não mudou.)
+        
+        /**
+         * Renderiza a interface da Urna e o teclado.
+         */
+        function renderVoterMode() {
+            if (!electionConfig || electionConfig.roles.length === 0) {
+                 appContainer.innerHTML = `
+                    <div class="bg-gray-900 text-white p-6 md:p-10 rounded-xl shadow-2xl">
+                        <h1 class="text-3xl font-bold text-red-500">ERRO DE CONFIGURAÇÃO</h1>
+                        <p class="mt-4">Nenhum cargo foi configurado para a eleição.</p>
+                        <p class="mt-2 text-yellow-400">Acesse o modo administrador (BRANCO x3 + 666) para configurar a eleição.</p>
+                        <p class="mt-4 text-sm text-gray-400">ID de Usuário: ${auth?.currentUser?.uid || 'N/A'}</p>
+                    </div>
+                `;
+                return;
+            }
+            
+            // Verifica se a votação terminou
+            if (appState.currentStageIndex >= electionConfig.roles.length) {
+                renderEndScreen();
+                return;
+            }
+
+            const currentRole = electionConfig.roles[appState.currentStageIndex];
+            const maxDigits = electionConfig.roleConfig[currentRole]?.digits || 0;
+            const isFinished = appState.currentStageIndex >= electionConfig.roles.length;
+
+            let numberSegmentsHTML = '';
+            for (let i = 0; i < maxDigits; i++) {
+                numberSegmentsHTML += `<div id="segment-${i}" class="display-segment"></div>`;
+            }
+
+            appContainer.innerHTML = `
+                <div class="bg-urna-casing p-6 md:p-10 rounded-xl shadow-2xl flex flex-col md:flex-row gap-6">
+                    <!-- Área da Tela (Display) -->
+                    <div class="flex-1 bg-urna-screen p-4 rounded-lg shadow-inner h-[400px] md:h-[550px] flex flex-col justify-between relative">
+                        <!-- Conteúdo do Voto -->
+                        <div class="text-white">
+                            <div class="text-xl md:text-2xl font-bold mb-4 text-center" id="cargo-display">
+                                CARGO: ${currentRole.toUpperCase()}
+                            </div>
+                            <div class="flex items-center justify-center mb-6">
+                                <span class="text-sm md:text-lg mr-4">NÚMERO:</span>
+                                <div id="number-input" class="flex">${numberSegmentsHTML}</div>
+                            </div>
+                            <!-- Informações e Foto do Candidato -->
+                            <div id="candidate-info" class="flex flex-col md:flex-row justify-center items-start gap-4 p-4 bg-gray-800 rounded-lg">
+                                <!-- Foto -->
+                                <div class="flex-shrink-0 w-36 h-44 bg-gray-500 rounded-md overflow-hidden flex items-center justify-center bg-cover bg-center" id="candidate-photo">
+                                    <span class="text-xs text-gray-300 p-2 text-center">Aguardando...</span>
+                                </div>
+                                <!-- Detalhes -->
+                                <div class="flex-1 min-w-0">
+                                    <p class="text-sm">NOME: <span class="font-semibold" id="nome-candidato">-</span></p>
+                                    <p class="text-sm">PARTIDO: <span class="font-semibold" id="partido-candidato">-</span></p>
+                                    <p class="text-lg mt-4 text-red-400 font-bold" id="vote-status"></p>
+                                </div>
+                            </div>
+                        </div>
+                        <!-- Instruções/Rodapé -->
+                        <div id="instructions" class="text-gray-400 text-xs mt-4 border-t border-gray-700 pt-3">
+                            <p>Aperte a tecla: <span class="text-btn-confirma font-bold">VERDE</span> para CONFIRMAR</p>
+                            <p>Aperte a tecla: <span class="text-btn-corrige font-bold">LARANJA</span> para CORRIGIR</p>
+                            <p class="mt-2 text-xs text-gray-500">ID de Usuário: ${auth?.currentUser?.uid || 'N/A'}</p>
+                        </div>
+                    </div>
+                    <!-- Área do Teclado (Keypad) -->
+                    <div class="w-full md:w-80 bg-gray-800 p-6 rounded-lg shadow-xl">
+                        <div class="grid grid-cols-3 gap-3">
+                            <!-- Teclas Numéricas -->
+                            ${[1, 2, 3, 4, 5, 6, 7, 8, 9].map(n => `<button onclick="handleKeyPress('${n}')" class="urna-key bg-gray-700 text-white p-3 md:p-4 text-xl md:text-2xl font-bold rounded-md shadow-md hover:bg-gray-600">${n}</button>`).join('')}
+                            <div class="col-span-1"></div>
+                            <button onclick="handleKeyPress('0')" class="urna-key bg-gray-700 text-white p-3 md:p-4 text-xl md:text-2xl font-bold rounded-md shadow-md hover:bg-gray-600">0</button>
+                            <div class="col-span-1"></div>
+
+                            <!-- Teclas de Comando -->
+                            <button onclick="handleBlank()" class="urna-key bg-btn-branco text-gray-800 p-3 text-xs font-black rounded-md shadow-lg border border-gray-400 hover:opacity-90 mt-4">BRANCO</button>
+                            <button onclick="handleCorrect()" class="urna-key bg-btn-corrige text-white p-3 text-xs font-black rounded-md shadow-lg hover:opacity-90 mt-4">CORRIGE</button>
+                            <button onclick="handleConfirm()" class="urna-key bg-btn-confirma text-white p-3 text-xs font-black rounded-md shadow-lg hover:opacity-90 mt-4">CONFIRMA</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+            // Atualiza os dados na tela recém-renderizada
+            updateDisplay();
+        }
+
+        /**
+         * Renderiza a tela de FIM.
+         */
+        function renderEndScreen() {
+            const registeredSuccess = window.voto_registrado_sucesso === true;
+            const message = registeredSuccess 
+                ? "SEU VOTO FOI REGISTRADO COM SUCESSO. Agradecemos sua participação!"
+                : "VOTAÇÃO ENCERRADA. (Falha ao registrar voto, eleitor pode já ter votado)";
+            
+            const color = registeredSuccess ? "text-green-500" : "text-red-500";
+
+            appContainer.innerHTML = `
+                <div class="bg-gray-900 text-white p-10 rounded-xl shadow-2xl h-[400px] flex items-center justify-center">
+                    <div class="text-center">
+                        <h1 class="text-6xl font-black ${color} animate-pulse">FIM</h1>
+                        <p class="mt-6 text-lg">${message}</p>
+                        <p class="mt-8 text-sm text-gray-400">Pressione CONFIRMA (3x) + 666 para o painel de resultados.</p>
+                    </div>
+                </div>
+            `;
+            // Não adiciona listener para reiniciar, pois o CONFIRMA+666 é o próximo passo
+        }
+
+
+        /**
+         * Atualiza os segmentos de número e as informações do candidato.
+         */
+        function updateDisplay() {
+            if (appState.mode !== 'voter') return;
+
+            const currentRole = electionConfig.roles[appState.currentStageIndex];
+            const maxDigits = electionConfig.roleConfig[currentRole]?.digits || 0;
+
+            const nomeCandidatoSpan = document.getElementById('nome-candidato');
+            const partidoCandidatoSpan = document.getElementById('partido-candidato');
+            const voteStatusP = document.getElementById('vote-status');
+            const candidatePhotoDiv = document.getElementById('candidate-photo');
+
+            // 1. Atualiza segmentos
+            let allSegmentsFull = true;
+            for (let i = 0; i < maxDigits; i++) {
+                const segment = document.getElementById(`segment-${i}`);
+                if (!segment) continue;
+
+                segment.textContent = appState.currentInput[i] || '';
+
+                segment.classList.remove('blink');
+                if (i === appState.currentInput.length && i < maxDigits && !appState.isVoteLocked) {
+                    segment.classList.add('blink');
+                    allSegmentsFull = false;
+                }
+                if (i >= appState.currentInput.length) {
+                    allSegmentsFull = false;
+                }
+            }
+            const numberInputDiv = document.getElementById('number-input');
+            if (numberInputDiv) {
+                numberInputDiv.classList.toggle('opacity-50', appState.isVoteBlank);
+            }
+            
+            // 2. Informações do Voto
+            if (appState.isVoteBlank) {
+                // BRANCO
+                nomeCandidatoSpan.textContent = 'VOTO EM BRANCO';
+                partidoCandidatoSpan.textContent = '---';
+                voteStatusP.textContent = '';
+                candidatePhotoDiv.innerHTML = '<span class="text-lg text-white font-bold p-2 text-center">BRANCO</span>';
+                candidatePhotoDiv.style.backgroundImage = 'none';
+                candidatePhotoDiv.style.backgroundColor = '#4B5563'; 
+                
+            } else if (allSegmentsFull) {
+                // VOTO COMPLETO (Válido ou Nulo)
+                const candidate = electionConfig.candidates.find(c => 
+                    c.role === currentRole && c.number === appState.currentInput
+                );
+
+                if (candidate) {
+                    // Candidato Válido
+                    nomeCandidatoSpan.textContent = candidate.name;
+                    partidoCandidatoSpan.textContent = candidate.party;
+                    voteStatusP.textContent = 'VOTO VÁLIDO';
+                    
+                    candidatePhotoDiv.innerHTML = '';
+                    candidatePhotoDiv.style.backgroundImage = `url('${candidate.photo}')`;
+                    candidatePhotoDiv.style.backgroundSize = 'cover';
+                    candidatePhotoDiv.style.backgroundPosition = 'center';
+                    candidatePhotoDiv.style.backgroundColor = 'transparent';
+
+                } else {
+                    // Voto Nulo
+                    nomeCandidatoSpan.textContent = 'VOTO INVÁLIDO OU DE LEGENDA';
+                    partidoCandidatoSpan.textContent = '---';
+                    voteStatusP.textContent = 'VOTO NULO';
+
+                    candidatePhotoDiv.innerHTML = '<span class="text-lg text-red-500 font-bold text-center">NULO</span>';
+                    candidatePhotoDiv.style.backgroundImage = 'none';
+                    candidatePhotoDiv.style.backgroundColor = '#4B5563';
+                }
+            } else {
+                // Estado inicial/incompleto
+                nomeCandidatoSpan.textContent = '-';
+                partidoCandidatoSpan.textContent = '-';
+                voteStatusP.textContent = '';
+                candidatePhotoDiv.innerHTML = '<span class="text-xs text-gray-300 p-2 text-center">Aguardando Número</span>';
+                candidatePhotoDiv.style.backgroundImage = 'none';
+                candidatePhotoDiv.style.backgroundColor = '#4B5563';
+            }
+        }
+
+        // --- Handlers de Teclado da Urna ---
+
+        function handleKeyPress(key) {
+            checkAdminSecret('NUMBER', key);
+            if (appState.mode !== 'voter' || appState.isVoteLocked) return;
+
+            const currentRole = electionConfig.roles[appState.currentStageIndex];
+            const maxDigits = electionConfig.roleConfig[currentRole]?.digits || 0;
+
+            if (appState.isVoteBlank) {
+                setState({ currentInput: key, isVoteBlank: false, isVoteLocked: false });
+            } else if (appState.currentInput.length < maxDigits) {
+                setState({ currentInput: appState.currentInput + key });
+            }
+        }
+
+        function handleBlank() {
+            checkAdminSecret('BRANCO');
+            if (appState.mode !== 'voter' || appState.isVoteLocked) return;
+            
+            setState({ 
+                currentInput: "", 
+                isVoteBlank: true, 
+                isVoteLocked: true, 
+            });
+        }
+
+        function handleCorrect() {
+            checkAdminSecret('CORRIGE');
+            if (appState.mode !== 'voter' || appState.isVoteLocked) return;
+            
+            setState({ currentInput: "", isVoteBlank: false, isVoteLocked: false });
+        }
+
+        async function handleConfirm() {
+            checkAdminSecret('CONFIRMA'); // Verifica se é o comando de resultados
+            if (appState.mode !== 'voter' || appState.isVoteLocked) return;
+
+            const currentRole = electionConfig.roles[appState.currentStageIndex];
+            const maxDigits = electionConfig.roleConfig[currentRole]?.digits || 0;
+
+            let voteValue;
+            let isValidConfirmation = false;
+
+            if (appState.isVoteBlank) {
+                voteValue = 'BRANCO';
+                isValidConfirmation = true;
+            } else if (appState.currentInput.length === maxDigits) {
+                voteValue = appState.currentInput;
+                isValidConfirmation = true;
+            }
+            
+            if (isValidConfirmation) {
+                appState.votes[currentRole] = voteValue;
+                
+                document.body.classList.add('bg-btn-confirma');
+                setTimeout(() => document.body.classList.remove('bg-btn-confirma'), 100);
+
+                const nextStageIndex = appState.currentStageIndex + 1;
+                
+                if (nextStageIndex < electionConfig.roles.length) {
+                    setState({
+                        currentStageIndex: nextStageIndex,
+                        currentInput: "",
+                        isVoteBlank: false,
+                        isVoteLocked: false,
+                    });
+                } else {
+                    await window.registerVote(appState.votes);
+                    setState({ currentStageIndex: nextStageIndex });
+                }
+            } else {
+                console.log("Confirmação inválida. Digite o número completo ou vote em BRANCO.");
+            }
+        }
+
+        // Event Listeners para Teclas Físicas
+        document.addEventListener('keydown', (e) => {
+            if (appState.mode === 'admin') return; // Teclado desativado no modo admin (para evitar quebras no form)
+
+            const key = e.key;
+            if (/\d/.test(key)) { // Números 0-9
+                handleKeyPress(key);
+            } else if (key === 'Enter') { // Enter para CONFIRMA
+                e.preventDefault();
+                handleConfirm();
+            } else if (key === 'Delete' || key === 'Backspace') { // Backspace/Delete para CORRIGE
+                e.preventDefault();
+                handleCorrect();
+            } else if (key.toUpperCase() === 'B') { // 'B' para BRANCO
+                handleBlank();
+            }
+        });
+
+        // --- LÓGICA DO MODO RESULTADOS ---
+
+        /**
+         * Calcula os resultados da eleição.
+         */
+        async function calculateResults() {
+            if (window.FIREBASE_FALLBACK) {
+                return {
+                    results: { 
+                        'Prefeito': { '13': 10, '45': 5, 'BRANCO': 2, 'NULO': 3 },
+                        'Vereador': { '55000': 8, '10123': 6, 'BRANCO': 5, 'NULO': 1 }
+                    },
+                    totalVotes: 25,
+                    timestamp: new Date().toLocaleString('pt-BR')
+                };
+            }
+
+            const votesCollection = collection(db, VOTES_COLLECTION_PATH);
+            const votesSnapshot = await window.getDocs(votesCollection);
+            const allVotes = votesSnapshot.docs.map(doc => doc.data());
+
+            const results = {};
+            const totalVotes = allVotes.length;
+
+            if (totalVotes === 0) {
+                 return { results: {}, totalVotes: 0, timestamp: new Date().toLocaleString('pt-BR') };
+            }
+
+            // Inicializa a estrutura de resultados
+            electionConfig.roles.forEach(role => {
+                results[role] = { 'BRANCO': 0, 'NULO': 0 };
+            });
+
+            // Agrega os votos
+            allVotes.forEach(vote => {
+                electionConfig.roles.forEach(role => {
+                    const voteValue = vote[role];
+                    if (voteValue) {
+                        // Trata BRANCO
+                        if (voteValue === 'BRANCO') {
+                            results[role]['BRANCO']++;
+                        } else {
+                            // Verifica se é um candidato válido
+                            const candidate = electionConfig.candidates.find(c => 
+                                c.role === role && c.number === voteValue
+                            );
+                            
+                            if (candidate) {
+                                // Voto Válido
+                                results[role][voteValue] = (results[role][voteValue] || 0) + 1;
+                            } else {
+                                // Voto Nulo (número digitado não corresponde a candidato)
+                                results[role]['NULO']++;
+                            }
+                        }
+                    }
+                });
+            });
+
+            return {
+                results: results,
+                totalVotes: totalVotes,
+                timestamp: new Date().toLocaleString('pt-BR')
+            };
+        }
+
+        /**
+         * Renderiza a tela de Resultados.
+         */
+        async function renderResultsMode() {
+            // Se os dados não foram calculados, calcula (apenas na primeira vez)
+            if (!appState.resultsData) {
+                appContainer.innerHTML = `
+                    <div class="bg-gray-900 text-white p-10 rounded-xl shadow-2xl h-[400px] flex items-center justify-center">
+                        <div class="text-center">
+                            <h1 class="text-4xl font-bold text-yellow-400 mb-4">ENCERRANDO VOTAÇÃO...</h1>
+                            <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-yellow-400 mx-auto"></div>
+                            <p class="mt-4">Processando a contagem de votos do Firestore.</p>
+                        </div>
+                    </div>
+                `;
+                const resultsData = await calculateResults();
+                setState({ resultsData: resultsData });
+                return; // Chama render novamente com os dados
+            }
+
+            const { results, totalVotes, timestamp } = appState.resultsData;
+            
+            let resultsHTML = '';
+
+            // Mapeia os cargos e seus resultados
+            electionConfig.roles.forEach(role => {
+                const roleResults = results[role] || {};
+                
+                // Combina candidatos válidos com votos especiais (NULO/BRANCO)
+                let entries = [];
+                // 1. Candidatos Válidos
+                electionConfig.candidates.filter(c => c.role === role).forEach(c => {
+                    const count = roleResults[c.number] || 0;
+                    entries.push({
+                        number: c.number,
+                        name: c.name,
+                        party: c.party,
+                        votes: count,
+                        isSpecial: false
+                    });
+                });
+                
+                // 2. Votos Especiais
+                if (roleResults['BRANCO'] !== undefined) {
+                    entries.push({
+                        number: 'BRANCO',
+                        name: 'Voto em Branco',
+                        party: '---',
+                        votes: roleResults['BRANCO'],
+                        isSpecial: true
+                    });
+                }
+                if (roleResults['NULO'] !== undefined) {
+                     entries.push({
+                        number: 'NULO',
+                        name: 'Voto Nulo (Dígitos Incorretos)',
+                        party: '---',
+                        votes: roleResults['NULO'],
+                        isSpecial: true
+                    });
+                }
+
+                // Ordena por votos (decrescente)
+                entries.sort((a, b) => b.votes - a.votes);
+
+                const tableRows = entries.map(e => `
+                    <tr class="${e.isSpecial ? 'bg-gray-700 font-semibold' : 'hover:bg-gray-600'}">
+                        <td class="p-3">${e.number}</td>
+                        <td class="p-3">${e.party}</td>
+                        <td class="p-3">${e.name}</td>
+                        <td class="p-3 text-right text-lg font-bold text-yellow-300">${e.votes}</td>
+                    </tr>
+                `).join('');
+
+                resultsHTML += `
+                    <h2 class="text-2xl font-bold mt-8 mb-4 border-l-4 border-green-400 pl-3">${role.toUpperCase()}</h2>
+                    <div class="overflow-x-auto mb-6">
+                        <table class="w-full text-left results-table bg-gray-800 rounded-lg">
+                            <thead>
+                                <tr class="bg-gray-700 text-gray-400 uppercase text-sm">
+                                    <th class="p-3 w-20">Número</th>
+                                    <th class="p-3 w-20">Partido</th>
+                                    <th class="p-3 flex-1">Nome / Tipo de Voto</th>
+                                    <th class="p-3 w-24 text-right">Votos</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${tableRows}
+                            </tbody>
+                        </table>
+                    </div>
+                `;
+            });
+
+            appContainer.innerHTML = `
+                <div class="bg-gray-900 text-white p-6 md:p-10 rounded-xl shadow-2xl w-full max-w-4xl">
+                    <div class="text-center mb-8 border-b border-gray-700 pb-4">
+                        <h1 class="text-4xl font-black text-red-500">VOTAÇÃO ENCERRADA</h1>
+                        <p class="text-lg text-yellow-400 mt-2">Relatório de Resultados Oficial</p>
+                        <p class="text-sm text-gray-400 mt-1">Data/Hora de Encerramento: ${timestamp}</p>
+                        <p class="text-md font-bold mt-4">Total de Votos (Eleitores Únicos): <span class="text-green-400">${totalVotes}</span></p>
+                    </div>
+
+                    ${totalVotes === 0 ? '<p class="text-center text-xl text-gray-400">Nenhum voto registrado no sistema.</p>' : resultsHTML}
+                    
+                    <div class="mt-8 pt-4 border-t border-gray-700 text-center">
+                        <button onclick="window.location.reload()" class="bg-blue-600 hover:bg-blue-700 p-3 rounded-md font-bold text-lg">
+                            Reiniciar Simulação
+                        </button>
+                    </div>
+                </div>
+            `;
+        }
+
+
+        // --- Função de Inicialização Principal ---
+        window.runApp = async function() {
+            // 1. Carregar/Criar Configuração
+            electionConfig = await window.getOrCreateElectionConfig();
+            
+            // Ordenar cargos pela propriedade 'order'
+            electionConfig.roles.sort((a, b) => {
+                const orderA = electionConfig.roleConfig[a]?.order || Infinity;
+                const orderB = electionConfig.roleConfig[b]?.order || Infinity;
+                return orderA - orderB;
+            });
+
+            // 2. Renderizar o modo inicial (Eleitor)
+            render();
+        }
+
+        // Exportar funções globais para uso no HTML Admin Panel
+        window.addRole = addRole;
+        window.removeRole = removeRole;
+        window.addCandidate = addCandidate;
+        window.removeCandidate = removeCandidate;
+        window.handleKeyPress = handleKeyPress;
+        window.handleBlank = handleBlank;
+        window.handleCorrect = handleCorrect;
+        window.handleConfirm = handleConfirm;
+        window.previewPhoto = previewPhoto; 
+        window.saveAndContinue = saveAndContinue;
+        window.resetCandidateForm = resetCandidateForm;
+        
+    </script>
+</body>
+</html>
